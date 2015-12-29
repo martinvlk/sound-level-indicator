@@ -1,7 +1,6 @@
 module Main where
 
-import Data.Maybe ( fromMaybe )
-import Data.Time.Calendar ( Day(..) )
+import Data.Time.Calendar           ( Day(..) )
 import Data.Time.Clock              ( getCurrentTime
                                     , UTCTime(..)
                                     )
@@ -22,7 +21,7 @@ import Control.Concurrent.STM.TChan ( TChan
 import Control.Monad                ( void
                                     , forever
                                     )
-import Control.Monad.IO.Class ( liftIO )
+import Control.Monad.IO.Class       ( liftIO )
 import Control.Monad.Loops          ( iterateUntilM
                                     , whileJust
                                     )
@@ -73,9 +72,6 @@ data Inputs = In { samples :: SoundData
 type SoundData = [Double]
 type AvgAmplitude = Double
 
--- data Timers = Timers [(RunAtMillisInterval, IO ())]
--- type RemainingMillisInterval = Int
-
 --------------------------------------------------------------------------------
 
 main :: IO ()
@@ -105,7 +101,7 @@ mainLoop = withGameTime (\w -> do
 withGameTime :: (World -> Curses World) -> World -> Curses World
 withGameTime frameWorkload w = do
   timeStart <- liftIO $ toSeconds =<< getCurrentTime
-  let realDt = timeStart - (lastFrameTime w) -- time since last frame
+  let realDt = timeStart - lastFrameTime w -- time since last frame
       gameDt = realDt * gameTimeFactor -- apply slow-down or speed-up
 
   w' <- frameWorkload $ w { gameDeltaTime = gameDt
@@ -119,16 +115,16 @@ withGameTime frameWorkload w = do
 
   where
     toSeconds (UTCTime day dt) = return $
-      ((fromInteger $ toModifiedJulianDay day) * 86400) + (realToFrac dt)
+      (fromInteger (toModifiedJulianDay day) * 86400) + realToFrac dt
     limitFrameRate tgt act | act < tgt = threadDelay $
-                                         ceiling $ (tgt - act) * 1000 -- microsec
+                                         ceiling $ (tgt - act) * 1000 --microsec
                            | act == tgt = return ()
                            | otherwise = error "Exceeded frame time!"
 
 initWorld :: Curses World
 initWorld = do
-  s <- liftIO $ simpleNew Nothing "mic0" Record Nothing
-       "sample game reading mic0"
+  s <- liftIO $ simpleNew Nothing "sound-level-indicator" Record Nothing
+       "Displaying sound level from default mic."
        (SampleSpec (F32 LittleEndian) 44100 1) Nothing Nothing
   sndChan <- liftIO newTChanIO
   threadId <- liftIO $ forkIO $ forever $ handleMic s sndChan
@@ -154,19 +150,18 @@ initWorld = do
 handleMic :: Simple -> TChan SoundData -> IO ()
 handleMic s sndChan = do
   sd <- simpleRead s samplesChunkSize
-  void . atomically $ do
-    writeTChan sndChan sd
+  void . atomically $ writeTChan sndChan sd
 
   where
-    samplesChunkSize = 100
+    samplesChunkSize = 1000
 
 processInputs :: WInputs -> Window -> Curses Inputs
 processInputs i w = do
   ev <- getEvent w timeout
-  let isEsc = fromMaybe False . fmap (== escChar) $ ev
+  let isEsc = maybe False (== escChar) ev
   sd <- liftIO $ atomically (readSoundData i)
-  return $ In { samples = sd
-              , escPressed = isEsc }
+  return In { samples = sd
+            , escPressed = isEsc }
   where
     timeout = Just 2
     escChar = EventCharacter '\ESC'
@@ -178,8 +173,8 @@ readSoundData i = do
 
 processSoundData :: SoundData -> AvgAmplitude
 processSoundData [] = 0
-processSoundData s = let d = fmap ((*amplificationFactor) . abs) $ s
-                     in min 1 $ (sum d) / (fromIntegral $ length d)
+processSoundData s = let d = fmap ((*amplificationFactor) . abs) s
+                     in min 1 $ sum d / fromIntegral (length d)
 
 updateWorld :: World -> Inputs -> World
 updateWorld w i = let sd = soundData w ++ samples i
