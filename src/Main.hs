@@ -179,29 +179,30 @@ processSoundData s = let d = fmap ((*amplificationFactor) . abs) s
 updateWorld :: World -> Inputs -> World
 updateWorld w i = let sd = soundData w ++ samples i
                       w' = w { stop = escPressed i }
-                  in if soundTime w >= soundProcesInterval
-                     then w' { ballPosition = processSoundData sd 
-                             , soundData = []
-                             , soundTime = 0 }
-                     else w' { soundData = sd
-                             , soundTime = soundTime w' + realDeltaTime w' }
+                  in
+                    if soundTime w >= soundProcesInterval
+                    then w' { ballPosition = processSoundData sd 
+                            , soundData = []
+                            , soundTime = 0 }
+                    else w' { soundData = sd
+                            , soundTime = soundTime w' + realDeltaTime w' }
 
 generateOutputs :: World -> Curses ()
 generateOutputs w = do
   (_, cols) <- screenSize
-  let width = fromIntegral $ cols - 5
+  let indent = 2
+      width = fromIntegral $ cols - indent
   updateWindow (win w) $ do
-    moveCursor 1 5
-    drawString $ replicate width ' '
-    moveCursor 1 5
-    drawString $ soundMeter width
-    moveCursor 3 5
-    drawString $ replicate width ' '
-    moveCursor 3 5
-    drawString $ "Signal level: " ++ show (ballPosition w)
+    draw 1 indent width $ soundMeter width
+    draw 3 indent width $ "Signal level: " ++ show (ballPosition w)
   render
 
   where
+    draw ln col width content = do
+      moveCursor ln col
+      drawString (replicate width ' ') -- clear the line
+      moveCursor ln col
+      drawString content -- draw new content
     soundMeter width = let len = ceiling $ fromIntegral width * ballPosition w
                        in replicate len '*'
 
