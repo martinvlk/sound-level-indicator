@@ -12,7 +12,7 @@ category:            Sound
 build-type:          Simple
 cabal-version:       >=1.10
 
-executable sound-level-indicator
+executable sli
   main-is:             Main.hs
   build-depends:       base >=4.8 && <4.9
                      , monad-loops
@@ -21,5 +21,16 @@ executable sound-level-indicator
                      , transformers
                      , ncurses
                      , time
+                     , sound-level-indicator
   hs-source-dirs:      src
   default-language:    Haskell2010
+
+library
+  exposed-modules:     MicChan
+  build-depends:       base
+                     , pulse-simple
+                     , stm
+                     , monad-loops
+  hs-source-dirs:      src
+  default-language:    Haskell2010
+  ghc-options: -Wall

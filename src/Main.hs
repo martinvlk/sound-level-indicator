@@ -5,38 +5,19 @@ import Data.Time.Clock              ( getCurrentTime
                                     , UTCTime(..)
                                     )
 
-import Control.Concurrent           ( forkIO
-                                    , ThreadId
-                                    , killThread
-                                    , threadDelay
+import Control.Concurrent           ( threadDelay
                                     )
 import Control.Concurrent.STM       ( STM
                                     , atomically
                                     )
-import Control.Concurrent.STM.TChan ( TChan
-                                    , newTChanIO
-                                    , tryReadTChan
-                                    , writeTChan
-                                    )
-import Control.Monad                ( void
-                                    , forever
+import Control.Concurrent.STM.TChan ( tryReadTChan
                                     )
 import Control.Monad.IO.Class       ( liftIO )
 import Control.Monad.Loops          ( iterateUntilM
                                     , whileJust
                                     )
 
-import Sound.Pulse.Simple           ( Simple
-                                    , Direction(..)
-                                    , SampleSpec(..)
-                                    , SampleFormat(..)
-                                    , Endian(..)
-                                    , simpleNew
-                                    , simpleFree
-                                    , simpleRead
-                                    )
-
-import UI.NCurses as NC             ( runCurses
+import qualified UI.NCurses as NC   ( runCurses
                                     , Window
                                     , defaultWindow
                                     , setEcho
@@ -51,32 +32,31 @@ import UI.NCurses as NC             ( runCurses
                                     , screenSize
                                     )
 
+import qualified MicChan as MC
+
 --------------------------------------------------------------------------------
 
 data World = World { inputs :: WInputs
                    , win :: NC.Window
                    , ballPosition :: Double
-                   , soundData :: SoundData
+                   , soundData :: MC.SoundData
                    , stop :: Bool
                    , lastFrameTime :: Double
                    , gameDeltaTime :: Double
                    , realDeltaTime :: Double
                    , soundTime :: Double }
 
-data WInputs = WInputs { pulseSource :: Simple
-                       , soundChan :: TChan SoundData
-                       , sndThreadId :: ThreadId }
+data WInputs = WInputs { mic :: MC.Mic }
 
-data Inputs = In { samples :: SoundData
+data Inputs = In { micData :: MC.SoundData
                  , escPressed :: Bool }
-type SoundData = [Double]
 type AvgAmplitude = Double
 
 --------------------------------------------------------------------------------
 
 main :: IO ()
 main =
-  runCurses $
+  NC.runCurses $
   initWorld >>= iterateUntilM stop mainLoop >>= liftIO . destroyWorld
 
 targetFrameTime :: Double
@@ -91,14 +71,14 @@ amplificationFactor = 1000
 soundProcesInterval :: Double
 soundProcesInterval = 0.250 -- every 250 ms
 
-mainLoop :: World -> Curses World
+mainLoop :: World -> NC.Curses World
 mainLoop = withGameTime (\w -> do
                              i <- processInputs (inputs w) (win w)
                              let w' = updateWorld w i
                              generateOutputs w'
                              return w' )
 
-withGameTime :: (World -> Curses World) -> World -> Curses World
+withGameTime :: (World -> NC.Curses World) -> World -> NC.Curses World
 withGameTime frameWorkload w = do
   timeStart <- liftIO $ toSeconds =<< getCurrentTime
   let realDt = timeStart - lastFrameTime w -- time since last frame
@@ -121,92 +101,70 @@ withGameTime frameWorkload w = do
                            | act == tgt = return ()
                            | otherwise = error "Exceeded frame time!"
 
-initWorld :: Curses World
+initWorld :: NC.Curses World
 initWorld = do
-  s <- liftIO $ simpleNew Nothing "sound-level-indicator" Record Nothing
-       "Displaying sound level from default mic."
-       (SampleSpec (F32 LittleEndian) 44100 1) Nothing Nothing
-  sndChan <- liftIO newTChanIO
-  threadId <- liftIO $ forkIO $ forever $ handleMic s sndChan
+  m <- liftIO MC.openMic
 
-  setEcho False
-  w <- defaultWindow
-  updateWindow w clear >> render
+  NC.setEcho False
+  w <- NC.defaultWindow
+  NC.updateWindow w NC.clear >> NC.render
 
   return World {
-    inputs = WInputs {
-        pulseSource = s
-        , soundChan = sndChan
-        , sndThreadId = threadId } 
+    inputs = WInputs { mic = m } 
     , win = w
     , ballPosition = 0
     , stop = False
     , lastFrameTime = 0
     , gameDeltaTime = 0
     , realDeltaTime = 0
-    , soundData = []
+    , soundData = mempty
     , soundTime = 0 }
 
-handleMic :: Simple -> TChan SoundData -> IO ()
-handleMic s sndChan = do
-  sd <- simpleRead s samplesChunkSize
-  void . atomically $ writeTChan sndChan sd
-
-  where
-    samplesChunkSize = 1000
-
-processInputs :: WInputs -> Window -> Curses Inputs
+processInputs :: WInputs -> NC.Window -> NC.Curses Inputs
 processInputs i w = do
-  ev <- getEvent w timeout
+  ev <- NC.getEvent w timeout
   let isEsc = maybe False (== escChar) ev
-  sd <- liftIO $ atomically (readSoundData i)
-  return In { samples = sd
+  sd <- liftIO $ atomically (MC.readSoundData $ mic i)
+  return In { micData = sd
             , escPressed = isEsc }
   where
     timeout = Just 2
-    escChar = EventCharacter '\ESC'
+    escChar = NC.EventCharacter '\ESC'
 
-readSoundData :: WInputs -> STM SoundData
-readSoundData i = do
-  dta <- whileJust (tryReadTChan $ soundChan i) return
-  return $ concat dta
-
-processSoundData :: SoundData -> AvgAmplitude
-processSoundData [] = 0
-processSoundData s = let d = fmap ((*amplificationFactor) . abs) s
-                     in min 1 $ sum d / fromIntegral (length d)
+processSoundData :: MC.SoundData -> AvgAmplitude
+processSoundData (MC.SD []) = 0
+processSoundData (MC.SD s) = let d = fmap ((*amplificationFactor) . abs) s
+                             in min 1 $ sum d / fromIntegral (length d)
 
 updateWorld :: World -> Inputs -> World
-updateWorld w i = let sd = soundData w ++ samples i
+updateWorld w i = let sd = soundData w `mappend` micData i
                       w' = w { stop = escPressed i }
                   in
                     if soundTime w >= soundProcesInterval
                     then w' { ballPosition = processSoundData sd 
-                            , soundData = []
+                            , soundData = mempty
                             , soundTime = 0 }
                     else w' { soundData = sd
                             , soundTime = soundTime w' + realDeltaTime w' }
 
-generateOutputs :: World -> Curses ()
+generateOutputs :: World -> NC.Curses ()
 generateOutputs w = do
-  (_, cols) <- screenSize
+  (_, cols) <- NC.screenSize
   let indent = 2
       width = fromIntegral $ cols - indent
-  updateWindow (win w) $ do
+  NC.updateWindow (win w) $ do
     draw 1 indent width $ soundMeter width
     draw 3 indent width $ "Signal level: " ++ show (ballPosition w)
-  render
+  NC.render
 
   where
     draw ln col width content = do
-      moveCursor ln col
-      drawString (replicate width ' ') -- clear the line
-      moveCursor ln col
-      drawString content -- draw new content
+      NC.moveCursor ln col
+      NC.drawString (replicate width ' ') -- clear the line
+      NC.moveCursor ln col
+      NC.drawString content -- draw new content
     soundMeter width = let len = ceiling $ fromIntegral width * ballPosition w
                        in replicate len '*'
 
 destroyWorld :: World -> IO ()
-destroyWorld w = let ins = inputs w
-                 in killThread (sndThreadId ins) >>
-                    simpleFree (pulseSource ins)
+destroyWorld w = MC.closeMic (mic $ inputs w)

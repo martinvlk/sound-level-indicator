@@ -1,4 +1,4 @@
-# A simple command-line sound level indicator.
+# A simple command-line sound level indicator
 
 Please note this will only work on systems with
 [PulseAudio](https://wiki.freedesktop.org/www/Software/PulseAudio/).
